@@ -64,3 +64,11 @@ impl BodyFilter {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct BodyFilters {
+    pub filters: *const BodyFilter,
+    pub len: usize,
+}
+unsafe impl Send for BodyFilters {}
+unsafe impl Sync for BodyFilters {}

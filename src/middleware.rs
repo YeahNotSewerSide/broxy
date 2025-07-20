@@ -13,7 +13,7 @@ impl MiddlewareIncomingFunction {
     pub fn process(
         &self,
         parts: &mut request::Parts,
-        body: &mut Option<&mut [u8]>,
+        body: &mut Option<&mut Vec<u8>>,
     ) -> anyhow::Result<()> {
         match self {
             MiddlewareIncomingFunction::External => todo!(),
@@ -86,28 +86,22 @@ impl Middleware {
         let incoming_needs_body = !incoming.iter().all(|proc| !proc.needs_body());
         let out_needs_body = !outgoing.iter().all(|proc| !proc.needs_body());
         Self {
-            process_incoming: Vec::new(),
-            process_out: Vec::new(),
+            process_incoming: incoming,
+            process_out: outgoing,
             incoming_needs_body,
             out_needs_body,
         }
     }
 
-    pub async fn process_incoming(
+    pub fn process_incoming(
         &self,
         parts: &mut request::Parts,
-        incoming: Option<Incoming>,
-    ) -> anyhow::Result<Option<Vec<u8>>> {
-        let mut body: Option<Vec<u8>> = if let Some(incoming) = incoming {
-            Some(incoming.collect().await?.to_bytes().to_vec())
-        } else {
-            None
-        };
-        let mut body_ref = body.as_mut().map(|body| body.as_mut_slice());
+        mut body: Option<&mut Vec<u8>>,
+    ) -> anyhow::Result<()> {
         for proc in &self.process_incoming {
-            proc.process(parts, &mut body_ref)?;
+            proc.process(parts, &mut body)?;
         }
-        Ok(body)
+        Ok(())
     }
 
     pub fn process_outgoing(
