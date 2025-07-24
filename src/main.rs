@@ -1,9 +1,7 @@
-use std::{error::Error, net::SocketAddr, str::FromStr as _};
+use std::{net::SocketAddr, str::FromStr as _};
 
 use filter::{BodyFilter, Filter};
 use http::Uri;
-use middleware::{Middleware, MiddlewareIncomingFunction};
-use regex::Regex;
 use server::Server;
 use service::{Service, ServiceBundle};
 use tracing::{debug, error, info, info_span, instrument};
@@ -31,47 +29,53 @@ async fn main() {
     info!("Starting Broxy proxy server");
 
     let upstream = upstream::Upstream {
-        address: SocketAddr::from_str("0.0.0.0:3006").unwrap(),
+        address: SocketAddr::from_str("0.0.0.0:9944").unwrap(),
         root_path: Uri::from_str("/").unwrap(),
         use_ssl: false,
     };
 
     debug!("Configured upstream: {:?}", upstream);
 
-    let filters = vec![
-        Filter::Method(hyper::Method::POST),
-        Filter::Path(Regex::new("/login").unwrap()),
-    ];
+    let filters = vec![Filter::Method(hyper::Method::POST)];
     let body_filters = vec![BodyFilter::InternalFullBody(|body| {
         let serialized = serde_json::from_slice::<serde_json::Value>(body);
         if let Ok(serialized) = serialized {
-            match serialized.get("email") {
-                Some(email) => Ok(email.eq("email@email.com")),
-                None => Err(anyhow::anyhow!("No `email` field specified")),
+            let method = serialized.get("method").and_then(|m| m.as_str());
+            if let Some(method) = method {
+                if method.eq("eth_sendTransaction") || method.eq("eth_sendRawTransaction") {
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            } else {
+                Ok(false)
             }
         } else {
             Err(unsafe { serialized.unwrap_err_unchecked() }.into())
         }
     })];
-    let service1 = Service::new(filters, body_filters, None, upstream.clone());
-
-    let filters = vec![
-        Filter::Method(hyper::Method::GET),
-        Filter::Path(Regex::new("/api/user").unwrap()),
-    ];
-    let middleware = Middleware::new(
-        vec![MiddlewareIncomingFunction::Internal(|header| {
-            header.uri = Uri::from_str("/user")?;
+    let middleware = middleware::Middleware::new(
+        vec![],
+        vec![middleware::MiddlewareOutgoingFunction::Internal(|header| {
+            header.headers.insert(
+                http::HeaderName::from_str("X-Provided-From").unwrap(),
+                "Hello, World!".parse().unwrap(),
+            );
             Ok(())
         })],
-        vec![],
     );
-    let service2 = Service::new(filters, Vec::new(), Some(middleware), upstream);
+    let service1 = Service::new(
+        filters,
+        body_filters,
+        Some(middleware),
+        upstream.clone(),
+        None,
+    );
 
-    let services = vec![service1, service2];
+    let services = vec![service1];
     let bundle = ServiceBundle::new(&services);
 
-    let server_addr = SocketAddr::from_str("0.0.0.0:8181").unwrap();
+    let server_addr = SocketAddr::from_str("0.0.0.0:8545").unwrap();
     info!("Starting server on {}", server_addr);
 
     let server = Server::new(server_addr, bundle, None).await.unwrap();

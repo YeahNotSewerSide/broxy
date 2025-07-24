@@ -9,7 +9,7 @@ use hyper::{
 };
 use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     filter::{BodyFilter, BodyFilters, Filter},
@@ -27,12 +27,15 @@ type ProcessFunction = fn(
     Box<dyn Future<Output = Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>> + Send>,
 >;
 
+type BodyNotFoundFunction = fn() -> Response<BoxBody<Bytes, hyper::Error>>;
+
 #[derive(Debug, Clone)]
 pub struct Service {
     filters: Vec<Filter>,
     body_filters: Vec<BodyFilter>,
     middleware: Option<Middleware>,
     upstream: Upstream,
+    not_found_body_response: Option<BodyNotFoundFunction>,
     _process: ProcessFunction,
     _filter: fn(&Service, header: &Parts) -> anyhow::Result<bool>,
 }
@@ -43,6 +46,7 @@ impl Service {
         body_filters: Vec<BodyFilter>,
         middleware: Option<Middleware>,
         upstream: Upstream,
+        not_found_body_response: Option<BodyNotFoundFunction>,
     ) -> Self {
         let amount_of_filters = filters.len();
         let has_body_filters = body_filters.len() > 0;
@@ -61,13 +65,18 @@ impl Service {
         Self {
             filters,
             upstream,
-            _process: if needs_body {
-                Service::process_with_body
+            _process: if has_middleware {
+                if needs_body {
+                    Service::process_with_body
+                } else {
+                    Service::process_without_body_with_middleware
+                }
             } else {
-                Service::process_without_body
+                Self::process_without_body_without_middleware
             },
             middleware,
             body_filters,
+            not_found_body_response,
             _filter: if amount_of_filters > 5 {
                 Service::filter_parallel_header
             } else {
@@ -201,7 +210,26 @@ impl Service {
         (self._process)(self, upstream, header, body)
     }
 
-    fn process_without_body(
+    fn process_without_body_without_middleware(
+        service: &Service,
+        upstream: Upstream,
+        header: http::request::Parts,
+        body: Incoming,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>>
+                + Send,
+        >,
+    > {
+        debug!(
+            "Processing request without body and without middleware to upstream: {:?}",
+            upstream
+        );
+
+        Self::process_without_body_internal(upstream, header, body)
+    }
+
+    fn process_without_body_with_middleware(
         service: &Service,
         upstream: Upstream,
         mut header: http::request::Parts,
@@ -213,27 +241,40 @@ impl Service {
         >,
     > {
         debug!(
-            "Processing request without body to upstream: {:?}",
+            "Processing request without body and without middleware to upstream: {:?}",
             upstream
         );
 
-        if let Some(middleware) = &service.middleware {
-            debug!("Applying middleware to request");
-            if let Err(e) = middleware.process_incoming(&mut header, None) {
-                error!("Middleware processing error: {}", e);
-                return Box::pin(async {
-                    let mut response = Response::new(
-                        Empty::<Bytes>::new()
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    );
-                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                    Ok(response)
-                });
-            }
-            debug!("Middleware processing completed successfully");
+        let middleware = unsafe { service.middleware.clone().unwrap_unchecked() };
+        debug!("Applying middleware to request");
+        if let Err(e) = middleware.process_incoming(&mut header, None) {
+            error!("Middleware processing error: {}", e);
+            return Box::pin(async {
+                let mut response = Response::new(
+                    Empty::<Bytes>::new()
+                        .map_err(|never| match never {})
+                        .boxed(),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                Ok(response)
+            });
         }
+        debug!("Middleware processing completed successfully");
 
+        Self::process_without_body_with_middleware_internal(middleware, upstream, header, body)
+    }
+
+    #[inline(always)]
+    fn process_without_body_internal(
+        upstream: Upstream,
+        header: http::request::Parts,
+        body: Incoming,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>>
+                + Send,
+        >,
+    > {
         Box::pin(async move {
             debug!("Connecting to upstream: {}", upstream.address);
             let stream = match TcpStream::connect(upstream.address).await {
@@ -272,8 +313,6 @@ impl Service {
                 }
             });
 
-            // TODO: apply middleware
-
             let request = Request::from_parts(header, body);
             debug!("Sending request to upstream");
 
@@ -287,6 +326,89 @@ impl Service {
                     return Err(e.into());
                 }
             };
+
+            let response = Response::from_parts(header, body.boxed());
+            debug!("Response created successfully");
+            return Ok(response);
+        })
+    }
+
+    #[inline(always)]
+    fn process_without_body_with_middleware_internal(
+        middleware: Middleware,
+        upstream: Upstream,
+        header: http::request::Parts,
+        body: Incoming,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>>
+                + Send,
+        >,
+    > {
+        Box::pin(async move {
+            debug!("Connecting to upstream: {}", upstream.address);
+            let stream = match TcpStream::connect(upstream.address).await {
+                Ok(stream) => {
+                    debug!("Successfully connected to upstream");
+                    stream
+                }
+                Err(e) => {
+                    error!("Failed to connect to upstream {}: {}", upstream.address, e);
+                    return Err(e.into());
+                }
+            };
+
+            let io = HyperSocket::from(stream);
+
+            debug!("Performing HTTP handshake");
+            let (mut sender, conn) = match Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(io)
+                .await
+            {
+                Ok(result) => {
+                    debug!("HTTP handshake successful");
+                    result
+                }
+                Err(e) => {
+                    error!("HTTP handshake failed: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            tokio::task::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!("Connection error: {}", err);
+                }
+            });
+
+            let request = Request::from_parts(header, body);
+            debug!("Sending request to upstream");
+
+            let (mut header, body) = match sender.send_request(request).await {
+                Ok(response) => {
+                    debug!("Request sent successfully, received response");
+                    response.into_parts()
+                }
+                Err(e) => {
+                    error!("Failed to send request: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            debug!("Applying middleware to response");
+            if let Err(e) = middleware.process_outgoing(&mut header, None) {
+                error!("Middleware processing error: {}", e);
+                let mut response = Response::new(
+                    Empty::<Bytes>::new()
+                        .map_err(|never| match never {})
+                        .boxed(),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return Ok(response);
+            }
+            debug!("Middleware processing completed successfully");
 
             let response = Response::from_parts(header, body.boxed());
             debug!("Response created successfully");
@@ -309,7 +431,9 @@ impl Service {
 
         let middleware = service.middleware.clone();
         let body_filters = service.get_body_filters_raw();
+        let not_found_body_response = service.not_found_body_response.clone();
         Box::pin(async move {
+            let middleware = unsafe { middleware.unwrap_unchecked() };
             let body_filters = body_filters;
             let body_filters =
                 unsafe { std::slice::from_raw_parts(body_filters.filters, body_filters.len) };
@@ -330,14 +454,19 @@ impl Service {
 
             debug!("Applying body filters");
             if !Service::filter_request_by_body(body_filters, &entire_body)? {
-                warn!("Request body failed filtering, returning FORBIDDEN");
-                let mut response = Response::new(
-                    Empty::<Bytes>::new()
-                        .map_err(|never| match never {})
-                        .boxed(),
-                );
-                *response.status_mut() = StatusCode::FORBIDDEN;
-                return Ok(response);
+                if let Some(not_found_body_response) = not_found_body_response {
+                    warn!("Request body not filtered, returning specified response");
+                    return Ok(not_found_body_response());
+                } else {
+                    warn!("Request body not filtered, returning FORBIDDEN");
+                    let mut response = Response::new(
+                        Empty::<Bytes>::new()
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    );
+                    *response.status_mut() = StatusCode::FORBIDDEN;
+                    return Ok(response);
+                }
             }
 
             debug!("Connecting to upstream: {}", upstream.address);
@@ -377,25 +506,23 @@ impl Service {
                 }
             });
 
-            if let Some(middleware) = middleware {
-                debug!("Applying middleware to request with body");
-                if let Err(e) = middleware.process_incoming(&mut header, Some(&mut entire_body)) {
-                    error!("Middleware processing error: {}", e);
-                    let mut response = Response::new(
-                        Empty::<Bytes>::new()
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    );
-                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                    return Ok(response);
-                };
-                debug!("Middleware processing completed successfully");
-            }
+            debug!("Applying middleware to request with body");
+            if let Err(e) = middleware.process_incoming(&mut header, Some(&mut entire_body)) {
+                error!("Middleware processing error: {}", e);
+                let mut response = Response::new(
+                    Empty::<Bytes>::new()
+                        .map_err(|never| match never {})
+                        .boxed(),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return Ok(response);
+            };
+            debug!("Middleware processing completed successfully");
 
             let request = Request::from_parts(header, Full::<Bytes>::from(entire_body));
             debug!("Sending request with body to upstream");
 
-            let (header, body) = match sender.send_request(request).await {
+            let (mut header, body) = match sender.send_request(request).await {
                 Ok(response) => {
                     debug!("Request sent successfully, received response");
                     response.into_parts()
@@ -406,7 +533,38 @@ impl Service {
                 }
             };
 
-            let response = Response::from_parts(header, body.boxed());
+            // NOTE: we won't be always recieving full body here
+            let mut entire_body = match body.collect().await {
+                Ok(collected) => {
+                    let bytes = collected.to_bytes().to_vec();
+                    debug!("Collected body of {} bytes", bytes.len());
+                    bytes
+                }
+                Err(e) => {
+                    error!("Failed to collect response body: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            debug!("Applying middleware to response with body");
+            if let Err(e) = middleware.process_outgoing(&mut header, Some(&mut entire_body)) {
+                error!("Middleware processing error: {}", e);
+                let mut response = Response::new(
+                    Empty::<Bytes>::new()
+                        .map_err(|never| match never {})
+                        .boxed(),
+                );
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return Ok(response);
+            };
+            debug!("Middleware processing completed successfully");
+
+            let response = Response::from_parts(
+                header,
+                Full::<Bytes>::from(entire_body)
+                    .map_err(|never| match never {})
+                    .boxed(),
+            );
             debug!("Response created successfully");
             return Ok(response);
         })

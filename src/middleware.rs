@@ -107,10 +107,10 @@ impl Middleware {
     pub fn process_outgoing(
         &self,
         parts: &mut response::Parts,
-        body: &mut Option<&mut [u8]>,
+        mut body: Option<&mut [u8]>,
     ) -> anyhow::Result<()> {
         for proc in &self.process_out {
-            proc.process(parts, body)?;
+            proc.process(parts, &mut body)?;
         }
         Ok(())
     }
