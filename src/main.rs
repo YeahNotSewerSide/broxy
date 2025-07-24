@@ -33,8 +33,7 @@ async fn main() {
         root_path: Uri::from_str("/").unwrap(),
         use_ssl: false,
     };
-
-    debug!("Configured upstream: {:?}", upstream);
+    let load_balancer = load_balancer::LoadBalancer::new(vec![upstream]);
 
     let filters = vec![Filter::Method(hyper::Method::POST)];
     let body_filters = vec![BodyFilter::InternalFullBody(|body| {
@@ -68,7 +67,7 @@ async fn main() {
         filters,
         body_filters,
         Some(middleware),
-        upstream.clone(),
+        &load_balancer,
         None,
     );
 

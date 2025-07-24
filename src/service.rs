@@ -1,3 +1,9 @@
+//! Service definitions and request processing logic.
+//!
+//! This module contains the core service abstraction that handles HTTP request processing,
+//! filtering, middleware application, and upstream forwarding. It provides both individual
+//! service instances and service bundles for routing requests.
+
 use std::pin::Pin;
 
 use http::{Request, Response, StatusCode, request::Parts};
@@ -13,11 +19,17 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     filter::{BodyFilter, BodyFilters, Filter},
+    load_balancer::LoadBalancer,
     middleware::Middleware,
     server::HyperSocket,
     upstream::Upstream,
 };
 
+/// Function type for processing HTTP requests.
+///
+/// This type alias defines the signature for request processing functions
+/// that take a service reference, upstream configuration, request parts,
+/// and incoming body, returning a future that resolves to a response.
 type ProcessFunction = fn(
     &Service,
     Upstream,
@@ -27,25 +39,58 @@ type ProcessFunction = fn(
     Box<dyn Future<Output = Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>> + Send>,
 >;
 
+/// Function type for generating "not found" responses.
+///
+/// This type alias defines the signature for functions that generate
+/// custom response bodies when no matching service is found.
 type BodyNotFoundFunction = fn() -> Response<BoxBody<Bytes, hyper::Error>>;
 
+/// A service that handles HTTP requests with filtering, middleware, and upstream forwarding.
+///
+/// Services are the core abstraction in Broxy that define how requests are processed.
+/// Each service contains filters to match requests, optional middleware for processing,
+/// and an upstream server configuration for forwarding requests.
 #[derive(Debug, Clone)]
 pub struct Service {
+    /// Request header filters for matching requests
     filters: Vec<Filter>,
+    /// Request body filters for content-based filtering
     body_filters: Vec<BodyFilter>,
+    /// Optional middleware for request/response processing
     middleware: Option<Middleware>,
-    upstream: Upstream,
+    /// Upstream server configuration
+    load_balancer: *const LoadBalancer,
+    /// Optional custom "not found" response generator
     not_found_body_response: Option<BodyNotFoundFunction>,
+    /// Function pointer to the appropriate processing method
     _process: ProcessFunction,
+    /// Function pointer to the appropriate filtering method
     _filter: fn(&Service, header: &Parts) -> anyhow::Result<bool>,
 }
 
 impl Service {
+    /// Creates a new service with the specified configuration.
+    ///
+    /// The service automatically selects the most efficient processing and filtering
+    /// strategies based on the provided configuration (e.g., parallel vs sequential
+    /// filtering, body processing vs header-only processing).
+    ///
+    /// # Arguments
+    ///
+    /// * `filters` - Request header filters for matching requests
+    /// * `body_filters` - Request body filters for content-based filtering
+    /// * `middleware` - Optional middleware for request/response processing
+    /// * `upstream` - Upstream server configuration
+    /// * `not_found_body_response` - Optional custom "not found" response generator
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `Service` instance configured with the specified parameters.
     pub fn new(
         filters: Vec<Filter>,
         body_filters: Vec<BodyFilter>,
         middleware: Option<Middleware>,
-        upstream: Upstream,
+        load_balancer: *const LoadBalancer,
         not_found_body_response: Option<BodyNotFoundFunction>,
     ) -> Self {
         let amount_of_filters = filters.len();
@@ -64,7 +109,7 @@ impl Service {
 
         Self {
             filters,
-            upstream,
+            load_balancer,
             _process: if has_middleware {
                 if needs_body {
                     Service::process_with_body
@@ -85,10 +130,29 @@ impl Service {
         }
     }
 
+    /// Returns a reference to the upstream configuration for this service.
+    ///
+    /// # Returns
+    ///
+    /// Returns a reference to the `Upstream` configuration.
     pub fn get_upstream(&self) -> &Upstream {
-        &self.upstream
+        unsafe { &*(*self.load_balancer).get_upstream() }
     }
 
+    /// Filters a request by its header information.
+    ///
+    /// This method applies all configured header filters to determine if the request
+    /// should be processed by this service. The filtering strategy (sequential vs parallel)
+    /// is automatically selected based on the number of filters.
+    ///
+    /// # Arguments
+    ///
+    /// * `header` - The HTTP request header parts to filter
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if the request matches all filters, `Ok(false)` if it doesn't match,
+    /// or an error if filtering fails.
     #[inline]
     pub fn filter_request_by_header(&self, header: &Parts) -> anyhow::Result<bool> {
         let result = (self._filter)(self, header);
@@ -99,6 +163,17 @@ impl Service {
         result
     }
 
+    /// Creates a raw body filters structure for FFI integration.
+    ///
+    /// This method creates a `BodyFilters` struct that can be safely passed to external code.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `BodyFilters` struct containing raw pointers to the body filters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called on a service with no body filters.
     fn get_body_filters_raw(&self) -> BodyFilters {
         BodyFilters {
             filters: self
@@ -110,6 +185,20 @@ impl Service {
         }
     }
 
+    /// Filters a request body using the provided body filters.
+    ///
+    /// This method applies all body filters to determine if the request body
+    /// should be processed. Currently only supports synchronous body filtering.
+    ///
+    /// # Arguments
+    ///
+    /// * `body_filters` - The body filters to apply
+    /// * `body` - The request body as bytes
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if the body passes all filters, `Ok(false)` if it's rejected,
+    /// or an error if filtering fails.
     #[inline]
     // TODO: for now we assume that `BodyFilter::InternalIncoming` never used
     pub fn filter_request_by_body(
@@ -144,7 +233,20 @@ impl Service {
     //    self.body_filters.len() > 0
     //}
 
-    /// filter request in sequence
+    /// Filters requests sequentially using all configured header filters.
+    ///
+    /// This method processes filters one by one, stopping at the first filter that
+    /// doesn't match. It's used when there are few filters (≤5) for better performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `service` - Reference to the service containing the filters
+    /// * `header` - The HTTP request header parts to filter
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if all filters pass, `Ok(false)` if any filter fails,
+    /// or an error if filtering fails.
     fn filter_sequential_header(service: &Service, header: &Parts) -> anyhow::Result<bool> {
         debug!(
             "Running sequential header filtering with {} filters",
@@ -169,7 +271,20 @@ impl Service {
         Ok(true)
     }
 
-    /// filter request in parallel, using rayon
+    /// Filters requests in parallel using all configured header filters.
+    ///
+    /// This method processes filters in parallel using rayon, which is more efficient
+    /// when there are many filters (>5). It stops at the first filter that doesn't match.
+    ///
+    /// # Arguments
+    ///
+    /// * `service` - Reference to the service containing the filters
+    /// * `header` - The HTTP request header parts to filter
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if all filters pass, `Ok(false)` if any filter fails,
+    /// or an error if filtering fails.
     fn filter_parallel_header(service: &Service, header: &Parts) -> anyhow::Result<bool> {
         debug!(
             "Running parallel header filtering with {} filters",
@@ -195,6 +310,21 @@ impl Service {
         Ok(result)
     }
 
+    /// Processes an HTTP request through this service.
+    ///
+    /// This method handles the complete request processing pipeline, including
+    /// filtering, middleware application, and upstream forwarding. The specific
+    /// processing strategy is automatically selected based on the service configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `upstream` - The upstream server configuration to forward requests to
+    /// * `header` - The HTTP request header parts
+    /// * `body` - The incoming HTTP body stream
+    ///
+    /// # Returns
+    ///
+    /// Returns a future that resolves to the HTTP response from the upstream server.
     #[inline]
     pub fn process(
         &self,
@@ -571,14 +701,35 @@ impl Service {
     }
 }
 
+/// A collection of services that can be used to route HTTP requests.
+///
+/// Service bundles are used by the HTTP server to determine which service
+/// should handle an incoming request. They iterate through all services
+/// and use the first one that matches the request criteria.
 #[derive(Debug, Clone)]
 pub struct ServiceBundle {
+    /// Raw pointer to the array of services for FFI safety
     services: *const [Service],
 }
+
+// SAFETY: This is safe because Service is Send and Sync
 unsafe impl Sync for ServiceBundle {}
+// SAFETY: This is safe because Service is Send and Sync
 unsafe impl Send for ServiceBundle {}
 
 impl ServiceBundle {
+    /// Creates a new service bundle from an array of services.
+    ///
+    /// This method initializes a new `ServiceBundle` that can be used to route
+    /// requests to multiple services. It logs the number of services being bundled.
+    ///
+    /// # Arguments
+    ///
+    /// * `services` - An array of `Service` instances to bundle
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `ServiceBundle` instance.
     pub fn new(services: &[Service]) -> Self {
         info!("Creating service bundle with {} services", services.len());
         Self {
@@ -594,6 +745,19 @@ impl HyperService<hyper::Request<Incoming>> for ServiceBundle {
 
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
+    /// Calls the service bundle to process an incoming HTTP request.
+    ///
+    /// This method iterates through all configured services and attempts to find
+    /// the first service that matches the request. It filters the request by header,
+    /// checks for large payloads, and then forwards the request to the selected service.
+    ///
+    /// # Arguments
+    ///
+    /// * `req` - The incoming HTTP request
+    ///
+    /// # Returns
+    ///
+    /// Returns a future that resolves to the HTTP response from the selected service.
     fn call(&self, req: hyper::Request<Incoming>) -> Self::Future {
         let (header, body) = req.into_parts();
         let uri = header.uri.clone();
