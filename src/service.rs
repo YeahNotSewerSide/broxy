@@ -4,7 +4,7 @@
 //! filtering, middleware application, and upstream forwarding. It provides both individual
 //! service instances and service bundles for routing requests.
 
-use std::pin::Pin;
+use std::{net::SocketAddr, pin::Pin, str::FromStr as _};
 
 use http::{Request, Response, StatusCode, request::Parts};
 use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
@@ -33,6 +33,7 @@ use crate::{
 type ProcessFunction = fn(
     &Service,
     Upstream,
+    &SocketAddr,
     http::request::Parts,
     Incoming,
 ) -> Pin<
@@ -65,7 +66,7 @@ pub struct Service {
     /// Function pointer to the appropriate processing method
     _process: ProcessFunction,
     /// Function pointer to the appropriate filtering method
-    _filter: fn(&Service, header: &Parts) -> anyhow::Result<bool>,
+    _filter: fn(&Service, &SocketAddr, header: &Parts) -> anyhow::Result<bool>,
 }
 
 impl Service {
@@ -154,8 +155,12 @@ impl Service {
     /// Returns `Ok(true)` if the request matches all filters, `Ok(false)` if it doesn't match,
     /// or an error if filtering fails.
     #[inline]
-    pub fn filter_request_by_header(&self, header: &Parts) -> anyhow::Result<bool> {
-        let result = (self._filter)(self, header);
+    pub fn filter_request_by_header(
+        &self,
+        from: &SocketAddr,
+        header: &Parts,
+    ) -> anyhow::Result<bool> {
+        let result = (self._filter)(self, from, header);
         match &result {
             Ok(matched) => debug!("Header filter result: {}", matched),
             Err(e) => error!("Header filter error: {}", e),
@@ -203,6 +208,7 @@ impl Service {
     // TODO: for now we assume that `BodyFilter::InternalIncoming` never used
     pub fn filter_request_by_body(
         body_filters: &[BodyFilter],
+        from: &SocketAddr,
         body: &[u8],
     ) -> anyhow::Result<bool> {
         debug!(
@@ -212,7 +218,7 @@ impl Service {
         );
 
         for (i, filter) in body_filters.iter().enumerate() {
-            match filter.filter(body) {
+            match filter.filter(from, body) {
                 Ok(passed) => {
                     debug!("Body filter {} result: {}", i, passed);
                     if !passed {
@@ -247,14 +253,18 @@ impl Service {
     ///
     /// Returns `Ok(true)` if all filters pass, `Ok(false)` if any filter fails,
     /// or an error if filtering fails.
-    fn filter_sequential_header(service: &Service, header: &Parts) -> anyhow::Result<bool> {
+    fn filter_sequential_header(
+        service: &Service,
+        from: &SocketAddr,
+        header: &Parts,
+    ) -> anyhow::Result<bool> {
         debug!(
             "Running sequential header filtering with {} filters",
             service.filters.len()
         );
 
         for (i, filter) in service.filters.iter().enumerate() {
-            match filter.filter(header) {
+            match filter.filter(from, header) {
                 Ok(passed) => {
                     debug!("Sequential filter {} result: {}", i, passed);
                     if !passed {
@@ -285,7 +295,11 @@ impl Service {
     ///
     /// Returns `Ok(true)` if all filters pass, `Ok(false)` if any filter fails,
     /// or an error if filtering fails.
-    fn filter_parallel_header(service: &Service, header: &Parts) -> anyhow::Result<bool> {
+    fn filter_parallel_header(
+        service: &Service,
+        from: &SocketAddr,
+        header: &Parts,
+    ) -> anyhow::Result<bool> {
         debug!(
             "Running parallel header filtering with {} filters",
             service.filters.len()
@@ -294,7 +308,7 @@ impl Service {
         let result = service
             .filters
             .par_iter()
-            .find_map_any(|filter| match filter.filter(header) {
+            .find_map_any(|filter| match filter.filter(from, header) {
                 Ok(f) => {
                     if f {
                         None
@@ -329,6 +343,7 @@ impl Service {
     pub fn process(
         &self,
         upstream: Upstream,
+        from: &SocketAddr,
         header: http::request::Parts,
         body: Incoming,
     ) -> Pin<
@@ -337,12 +352,13 @@ impl Service {
                 + Send,
         >,
     > {
-        (self._process)(self, upstream, header, body)
+        (self._process)(self, upstream, from, header, body)
     }
 
     fn process_without_body_without_middleware(
         service: &Service,
         upstream: Upstream,
+        from: &SocketAddr,
         header: http::request::Parts,
         body: Incoming,
     ) -> Pin<
@@ -362,6 +378,7 @@ impl Service {
     fn process_without_body_with_middleware(
         service: &Service,
         upstream: Upstream,
+        from: &SocketAddr,
         mut header: http::request::Parts,
         body: Incoming,
     ) -> Pin<
@@ -377,7 +394,7 @@ impl Service {
 
         let middleware = unsafe { service.middleware.clone().unwrap_unchecked() };
         debug!("Applying middleware to request");
-        if let Err(e) = middleware.process_incoming(&mut header, None) {
+        if let Err(e) = middleware.process_incoming(from, &mut header, None) {
             error!("Middleware processing error: {}", e);
             return Box::pin(async {
                 let mut response = Response::new(
@@ -391,7 +408,9 @@ impl Service {
         }
         debug!("Middleware processing completed successfully");
 
-        Self::process_without_body_with_middleware_internal(middleware, upstream, header, body)
+        Self::process_without_body_with_middleware_internal(
+            middleware, upstream, from, header, body,
+        )
     }
 
     #[inline(always)]
@@ -467,6 +486,7 @@ impl Service {
     fn process_without_body_with_middleware_internal(
         middleware: Middleware,
         upstream: Upstream,
+        from: &SocketAddr,
         header: http::request::Parts,
         body: Incoming,
     ) -> Pin<
@@ -475,6 +495,7 @@ impl Service {
                 + Send,
         >,
     > {
+        let from = from.clone();
         Box::pin(async move {
             debug!("Connecting to upstream: {}", upstream.address);
             let stream = match TcpStream::connect(upstream.address).await {
@@ -528,7 +549,7 @@ impl Service {
             };
 
             debug!("Applying middleware to response");
-            if let Err(e) = middleware.process_outgoing(&mut header, None) {
+            if let Err(e) = middleware.process_outgoing(&from, &mut header, None) {
                 error!("Middleware processing error: {}", e);
                 let mut response = Response::new(
                     Empty::<Bytes>::new()
@@ -549,6 +570,7 @@ impl Service {
     fn process_with_body(
         service: &Service,
         upstream: Upstream,
+        from: &SocketAddr,
         mut header: http::request::Parts,
         body: Incoming,
     ) -> Pin<
@@ -562,6 +584,7 @@ impl Service {
         let middleware = service.middleware.clone();
         let body_filters = service.get_body_filters_raw();
         let not_found_body_response = service.not_found_body_response.clone();
+        let from = from.clone();
         Box::pin(async move {
             let middleware = unsafe { middleware.unwrap_unchecked() };
             let body_filters = body_filters;
@@ -583,7 +606,7 @@ impl Service {
             };
 
             debug!("Applying body filters");
-            if !Service::filter_request_by_body(body_filters, &entire_body)? {
+            if !Service::filter_request_by_body(body_filters, &from, &entire_body)? {
                 if let Some(not_found_body_response) = not_found_body_response {
                     warn!("Request body not filtered, returning specified response");
                     return Ok(not_found_body_response());
@@ -637,7 +660,8 @@ impl Service {
             });
 
             debug!("Applying middleware to request with body");
-            if let Err(e) = middleware.process_incoming(&mut header, Some(&mut entire_body)) {
+            if let Err(e) = middleware.process_incoming(&from, &mut header, Some(&mut entire_body))
+            {
                 error!("Middleware processing error: {}", e);
                 let mut response = Response::new(
                     Empty::<Bytes>::new()
@@ -677,7 +701,8 @@ impl Service {
             };
 
             debug!("Applying middleware to response with body");
-            if let Err(e) = middleware.process_outgoing(&mut header, Some(&mut entire_body)) {
+            if let Err(e) = middleware.process_outgoing(&from, &mut header, Some(&mut entire_body))
+            {
                 error!("Middleware processing error: {}", e);
                 let mut response = Response::new(
                     Empty::<Bytes>::new()
@@ -710,6 +735,8 @@ impl Service {
 pub struct ServiceBundle {
     /// Raw pointer to the array of services for FFI safety
     services: *const [Service],
+
+    pub from: SocketAddr,
 }
 
 // SAFETY: This is safe because Service is Send and Sync
@@ -734,6 +761,7 @@ impl ServiceBundle {
         info!("Creating service bundle with {} services", services.len());
         Self {
             services: services as *const _,
+            from: unsafe { SocketAddr::from_str("0.0.0.0:1").unwrap_unchecked() },
         }
     }
 }
@@ -768,7 +796,7 @@ impl HyperService<hyper::Request<Incoming>> for ServiceBundle {
         for (i, service) in unsafe { &*self.services }.iter().enumerate() {
             debug!("Trying service {} for request", i);
 
-            match service.filter_request_by_header(&header) {
+            match service.filter_request_by_header(&self.from, &header) {
                 Ok(found) => {
                     if !found {
                         debug!("Service {} did not match request", i);
@@ -813,7 +841,7 @@ impl HyperService<hyper::Request<Incoming>> for ServiceBundle {
             debug!("Selected service {} with upstream: {:?}", i, upstream);
 
             // TODO: REMOVE CLONE
-            return service.process(upstream.clone(), header, body);
+            return service.process(upstream.clone(), &self.from, header, body);
         }
 
         warn!("No matching service found for request: {} {}", method, uri);

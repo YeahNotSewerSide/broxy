@@ -1,1 +1,4 @@
 /target
+flamegraph.svg
+.gitignore
+perf.data

@@ -1,9 +1,11 @@
+use std::net::SocketAddr;
+
 use http::{request, response};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 
 /// Incoming request middleware function types.
-/// 
+///
 /// These functions are called before forwarding requests to upstream servers
 /// and can modify request headers and bodies.
 #[derive(Debug, Clone)]
@@ -11,25 +13,26 @@ pub enum MiddlewareIncomingFunction {
     /// External middleware (not yet implemented)
     External,
     /// Internal middleware that processes both headers and body
-    InternalWithBody(fn(&mut request::Parts, &mut [u8]) -> anyhow::Result<()>),
+    InternalWithBody(fn(&SocketAddr, &mut request::Parts, &mut [u8]) -> anyhow::Result<()>),
     /// Internal middleware that processes only headers
-    Internal(fn(&mut request::Parts) -> anyhow::Result<()>),
+    Internal(fn(&SocketAddr, &mut request::Parts) -> anyhow::Result<()>),
 }
 
 impl MiddlewareIncomingFunction {
     /// Processes the incoming request with this middleware function.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `parts` - The HTTP request header parts to modify
     /// * `body` - Optional mutable reference to the request body
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Ok(())` on success or an error if processing fails.
     #[inline]
     pub fn process(
         &self,
+        from: &SocketAddr,
         parts: &mut request::Parts,
         body: &mut Option<&mut Vec<u8>>,
     ) -> anyhow::Result<()> {
@@ -37,19 +40,19 @@ impl MiddlewareIncomingFunction {
             MiddlewareIncomingFunction::External => todo!(),
             MiddlewareIncomingFunction::InternalWithBody(func) => {
                 if let Some(body) = body {
-                    func(parts, body)
+                    func(from, parts, body)
                 } else {
                     Err(anyhow::anyhow!("No body provided"))
                 }
             }
-            MiddlewareIncomingFunction::Internal(func) => func(parts),
+            MiddlewareIncomingFunction::Internal(func) => func(from, parts),
         }
     }
 
     /// Checks if this middleware function requires access to the request body.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `true` if the middleware needs the body, `false` otherwise.
     pub fn needs_body(&self) -> bool {
         match self {
@@ -60,7 +63,7 @@ impl MiddlewareIncomingFunction {
 }
 
 /// Outgoing response middleware function types.
-/// 
+///
 /// These functions are called after receiving responses from upstream servers
 /// and can modify response headers and bodies.
 #[derive(Debug, Clone)]
@@ -68,25 +71,26 @@ pub enum MiddlewareOutgoingFunction {
     /// External middleware (not yet implemented)
     External,
     /// Internal middleware that processes both headers and body
-    InternalWithBody(fn(&mut response::Parts, &mut [u8]) -> anyhow::Result<()>),
+    InternalWithBody(fn(&SocketAddr, &mut response::Parts, &mut [u8]) -> anyhow::Result<()>),
     /// Internal middleware that processes only headers
-    Internal(fn(&mut response::Parts) -> anyhow::Result<()>),
+    Internal(fn(&SocketAddr, &mut response::Parts) -> anyhow::Result<()>),
 }
 
 impl MiddlewareOutgoingFunction {
     /// Processes the outgoing response with this middleware function.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `parts` - The HTTP response header parts to modify
     /// * `body` - Optional mutable reference to the response body
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Ok(())` on success or an error if processing fails.
     #[inline]
     pub fn process(
         &self,
+        from: &SocketAddr,
         parts: &mut response::Parts,
         body: &mut Option<&mut [u8]>,
     ) -> anyhow::Result<()> {
@@ -94,19 +98,19 @@ impl MiddlewareOutgoingFunction {
             MiddlewareOutgoingFunction::External => todo!(),
             MiddlewareOutgoingFunction::InternalWithBody(func) => {
                 if let Some(body) = body {
-                    func(parts, body)
+                    func(from, parts, body)
                 } else {
                     Err(anyhow::anyhow!("No body provided"))
                 }
             }
-            MiddlewareOutgoingFunction::Internal(func) => func(parts),
+            MiddlewareOutgoingFunction::Internal(func) => func(from, parts),
         }
     }
 
     /// Checks if this middleware function requires access to the response body.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `true` if the middleware needs the body, `false` otherwise.
     pub fn needs_body(&self) -> bool {
         match self {
@@ -117,7 +121,7 @@ impl MiddlewareOutgoingFunction {
 }
 
 /// Middleware chain for processing requests and responses.
-/// 
+///
 /// This struct contains collections of incoming and outgoing middleware functions
 /// that are applied to requests and responses respectively.
 #[derive(Debug, Clone)]
@@ -134,14 +138,14 @@ pub struct Middleware {
 
 impl Middleware {
     /// Creates a new middleware chain with the specified incoming and outgoing functions.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `incoming` - Vector of incoming request middleware functions
     /// * `outgoing` - Vector of outgoing response middleware functions
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns a new `Middleware` instance with the specified functions.
     pub fn new(
         incoming: Vec<MiddlewareIncomingFunction>,
@@ -158,43 +162,45 @@ impl Middleware {
     }
 
     /// Processes incoming request headers and optionally the body through all middleware.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `parts` - The HTTP request header parts to process
     /// * `body` - Optional mutable reference to the request body
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Ok(())` on success or an error if any middleware fails.
     pub fn process_incoming(
         &self,
+        from: &SocketAddr,
         parts: &mut request::Parts,
         mut body: Option<&mut Vec<u8>>,
     ) -> anyhow::Result<()> {
         for proc in &self.process_incoming {
-            proc.process(parts, &mut body)?;
+            proc.process(from, parts, &mut body)?;
         }
         Ok(())
     }
 
     /// Processes outgoing response headers and optionally the body through all middleware.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `parts` - The HTTP response header parts to process
     /// * `body` - Optional mutable reference to the response body
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns `Ok(())` on success or an error if any middleware fails.
     pub fn process_outgoing(
         &self,
+        from: &SocketAddr,
         parts: &mut response::Parts,
         mut body: Option<&mut [u8]>,
     ) -> anyhow::Result<()> {
         for proc in &self.process_out {
-            proc.process(parts, &mut body)?;
+            proc.process(from, parts, &mut body)?;
         }
         Ok(())
     }

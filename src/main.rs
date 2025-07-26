@@ -36,7 +36,7 @@ async fn main() {
     let load_balancer = load_balancer::LoadBalancer::new(vec![upstream]);
 
     let filters = vec![Filter::Method(hyper::Method::POST)];
-    let body_filters = vec![BodyFilter::InternalFullBody(|body| {
+    let body_filters = vec![BodyFilter::InternalFullBody(|_, body| {
         let serialized = serde_json::from_slice::<serde_json::Value>(body);
         if let Ok(serialized) = serialized {
             let method = serialized.get("method").and_then(|m| m.as_str());
@@ -55,13 +55,15 @@ async fn main() {
     })];
     let middleware = middleware::Middleware::new(
         vec![],
-        vec![middleware::MiddlewareOutgoingFunction::Internal(|header| {
-            header.headers.insert(
-                http::HeaderName::from_str("X-Provided-From").unwrap(),
-                "Hello, World!".parse().unwrap(),
-            );
-            Ok(())
-        })],
+        vec![middleware::MiddlewareOutgoingFunction::Internal(
+            |from, header| {
+                header.headers.insert(
+                    http::HeaderName::from_str("X-Provided-For").unwrap(),
+                    from.to_string().parse().unwrap(),
+                );
+                Ok(())
+            },
+        )],
     );
     let service1 = Service::new(
         filters,

@@ -1,11 +1,11 @@
 use std::{convert::Infallible, net::SocketAddr, task::Poll};
 
 use anyhow::Result;
-use http::Response;
+use http::{Request, Response};
 use http_body_util::combinators::BoxBody;
 use hyper::{
-    body::{Bytes, Incoming},
-    service::service_fn,
+    body::{self, Bytes, Incoming},
+    service::{Service as _, service_fn},
 };
 use hyper_util::{rt::TokioExecutor, server::conn::auto::Builder};
 use tokio::net::{TcpListener, TcpStream};
@@ -62,12 +62,14 @@ impl Server {
     pub async fn accept(&self) -> Result<()> {
         let (conn, address) = self.connection.accept().await?;
 
-        let bundle = self.services.clone();
+        let mut bundle = self.services.clone();
+        bundle.from = address;
 
         if let Some(tls_acceptor) = self.tls_acceptor.as_ref() {
             // TODO: Implement TLS connection handling
         } else {
             let io = HyperSocket::from(conn);
+
             tokio::spawn(async move {
                 let result = Builder::new(TokioExecutor::new())
                     .serve_connection(io, bundle)
