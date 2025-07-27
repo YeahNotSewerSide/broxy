@@ -27,11 +27,28 @@ async fn main() {
 
     info!("Starting Broxy proxy server");
 
-    let upstream = upstream::Upstream {
-        address: SocketAddr::from_str("0.0.0.0:9944").unwrap(),
-        use_ssl: false,
-    };
-    let load_balancer = load_balancer::LoadBalancer::new(vec![upstream]);
+    let load_balancer = load_balancer::LoadBalancer::new(vec![
+        upstream::Upstream {
+            address: SocketAddr::from_str("0.0.0.0:9944").unwrap(),
+            use_ssl: false,
+        },
+        upstream::Upstream {
+            address: SocketAddr::from_str("0.0.0.0:9945").unwrap(),
+            use_ssl: false,
+        },
+        upstream::Upstream {
+            address: SocketAddr::from_str("0.0.0.0:9946").unwrap(),
+            use_ssl: false,
+        },
+        upstream::Upstream {
+            address: SocketAddr::from_str("0.0.0.0:9947").unwrap(),
+            use_ssl: false,
+        },
+        upstream::Upstream {
+            address: SocketAddr::from_str("0.0.0.0:9948").unwrap(),
+            use_ssl: false,
+        },
+    ]);
 
     let filters = vec![Filter::Method(hyper::Method::POST)];
     let body_filters = vec![BodyFilter::InternalFullBody(|_, body| {
@@ -54,10 +71,14 @@ async fn main() {
     let middleware = middleware::Middleware::new(
         vec![],
         vec![middleware::MiddlewareOutgoingFunction::Internal(
-            |from, header| {
+            |from, upstream_addr, header| {
                 header.headers.insert(
                     http::HeaderName::from_str("X-Provided-For").unwrap(),
                     from.to_string().parse().unwrap(),
+                );
+                header.headers.insert(
+                    http::HeaderName::from_str("X-backend").unwrap(),
+                    upstream_addr.to_string().parse().unwrap(),
                 );
                 Ok(())
             },
@@ -74,7 +95,7 @@ async fn main() {
     let services = vec![service1];
     let bundle = ServiceBundle::new(&services);
 
-    let server_addr = SocketAddr::from_str("0.0.0.0:8545").unwrap();
+    let server_addr = SocketAddr::from_str("0.0.0.0:8546").unwrap();
     info!("Starting server on {}", server_addr);
 
     let server = Server::new(server_addr, bundle, None).await.unwrap();

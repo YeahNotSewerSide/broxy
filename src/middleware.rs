@@ -69,9 +69,11 @@ pub enum MiddlewareOutgoingFunction {
     /// External middleware (not yet implemented)
     External,
     /// Internal middleware that processes both headers and body
-    InternalWithBody(fn(&SocketAddr, &mut response::Parts, &mut [u8]) -> anyhow::Result<()>),
+    InternalWithBody(
+        fn(&SocketAddr, &SocketAddr, &mut response::Parts, &mut [u8]) -> anyhow::Result<()>,
+    ),
     /// Internal middleware that processes only headers
-    Internal(fn(&SocketAddr, &mut response::Parts) -> anyhow::Result<()>),
+    Internal(fn(&SocketAddr, &SocketAddr, &mut response::Parts) -> anyhow::Result<()>),
 }
 
 impl MiddlewareOutgoingFunction {
@@ -89,6 +91,7 @@ impl MiddlewareOutgoingFunction {
     pub fn process(
         &self,
         from: &SocketAddr,
+        upstream_addr: &SocketAddr,
         parts: &mut response::Parts,
         body: &mut Option<&mut [u8]>,
     ) -> anyhow::Result<()> {
@@ -96,12 +99,12 @@ impl MiddlewareOutgoingFunction {
             MiddlewareOutgoingFunction::External => todo!(),
             MiddlewareOutgoingFunction::InternalWithBody(func) => {
                 if let Some(body) = body {
-                    func(from, parts, body)
+                    func(from, upstream_addr, parts, body)
                 } else {
                     Err(anyhow::anyhow!("No body provided"))
                 }
             }
-            MiddlewareOutgoingFunction::Internal(func) => func(from, parts),
+            MiddlewareOutgoingFunction::Internal(func) => func(from, upstream_addr, parts),
         }
     }
 
@@ -194,11 +197,12 @@ impl Middleware {
     pub fn process_outgoing(
         &self,
         from: &SocketAddr,
+        upstream_addr: &SocketAddr,
         parts: &mut response::Parts,
         mut body: Option<&mut [u8]>,
     ) -> anyhow::Result<()> {
         for proc in &self.process_out {
-            proc.process(from, parts, &mut body)?;
+            proc.process(from, upstream_addr, parts, &mut body)?;
         }
         Ok(())
     }

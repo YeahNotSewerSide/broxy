@@ -182,7 +182,8 @@ impl Service {
     fn get_body_filters_raw(&self) -> BodyFilters {
         BodyFilters {
             filters: self
-                .body_filters.first()
+                .body_filters
+                .first()
                 .expect("`get_body_filters_raw` was called with no body filters")
                 as *const _,
             len: self.body_filters.len(),
@@ -548,7 +549,8 @@ impl Service {
             };
 
             debug!("Applying middleware to response");
-            if let Err(e) = middleware.process_outgoing(&from, &mut header, None) {
+            if let Err(e) = middleware.process_outgoing(&from, &upstream.address, &mut header, None)
+            {
                 error!("Middleware processing error: {}", e);
                 let mut response = Response::new(
                     Empty::<Bytes>::new()
@@ -700,8 +702,12 @@ impl Service {
             };
 
             debug!("Applying middleware to response with body");
-            if let Err(e) = middleware.process_outgoing(&from, &mut header, Some(&mut entire_body))
-            {
+            if let Err(e) = middleware.process_outgoing(
+                &from,
+                &upstream.address,
+                &mut header,
+                Some(&mut entire_body),
+            ) {
                 error!("Middleware processing error: {}", e);
                 let mut response = Response::new(
                     Empty::<Bytes>::new()
