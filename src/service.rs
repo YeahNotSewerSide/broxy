@@ -13,6 +13,7 @@ use hyper::{
     client::conn::http1::Builder,
     service::Service as HyperService,
 };
+use hyper_util::rt::TokioIo as HyperSocket;
 use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
@@ -21,7 +22,6 @@ use crate::{
     filter::{BodyFilter, BodyFilters, Filter},
     load_balancer::LoadBalancer,
     middleware::Middleware,
-    server::HyperSocket,
     upstream::Upstream,
 };
 
@@ -437,7 +437,7 @@ impl Service {
                 }
             };
 
-            let io = HyperSocket::from(stream);
+            let io = HyperSocket::new(stream);
 
             debug!("Performing HTTP handshake");
             let (mut sender, conn) = match Builder::new()
@@ -509,7 +509,7 @@ impl Service {
                 }
             };
 
-            let io = HyperSocket::from(stream);
+            let io = HyperSocket::new(stream);
 
             debug!("Performing HTTP handshake");
             let (mut sender, conn) = match Builder::new()
@@ -634,7 +634,7 @@ impl Service {
                 }
             };
 
-            let io = HyperSocket::from(stream);
+            let io = HyperSocket::new(stream);
 
             debug!("Performing HTTP handshake");
             let (mut sender, conn) = match Builder::new()
