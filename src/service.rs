@@ -95,7 +95,7 @@ impl Service {
         not_found_body_response: Option<BodyNotFoundFunction>,
     ) -> Self {
         let amount_of_filters = filters.len();
-        let has_body_filters = body_filters.len() > 0;
+        let has_body_filters = !body_filters.is_empty();
         let has_middleware = middleware.is_some();
         let needs_body = has_body_filters
             || (has_middleware && middleware.as_ref().unwrap().incoming_needs_body);
@@ -182,8 +182,7 @@ impl Service {
     fn get_body_filters_raw(&self) -> BodyFilters {
         BodyFilters {
             filters: self
-                .body_filters
-                .get(0)
+                .body_filters.first()
                 .expect("`get_body_filters_raw` was called with no body filters")
                 as *const _,
             len: self.body_filters.len(),
@@ -478,7 +477,7 @@ impl Service {
 
             let response = Response::from_parts(header, body.boxed());
             debug!("Response created successfully");
-            return Ok(response);
+            Ok(response)
         })
     }
 
@@ -495,7 +494,7 @@ impl Service {
                 + Send,
         >,
     > {
-        let from = from.clone();
+        let from = *from;
         Box::pin(async move {
             debug!("Connecting to upstream: {}", upstream.address);
             let stream = match TcpStream::connect(upstream.address).await {
@@ -563,7 +562,7 @@ impl Service {
 
             let response = Response::from_parts(header, body.boxed());
             debug!("Response created successfully");
-            return Ok(response);
+            Ok(response)
         })
     }
 
@@ -583,8 +582,8 @@ impl Service {
 
         let middleware = service.middleware.clone();
         let body_filters = service.get_body_filters_raw();
-        let not_found_body_response = service.not_found_body_response.clone();
-        let from = from.clone();
+        let not_found_body_response = service.not_found_body_response;
+        let from = *from;
         Box::pin(async move {
             let middleware = unsafe { middleware.unwrap_unchecked() };
             let body_filters = body_filters;
@@ -721,7 +720,7 @@ impl Service {
                     .boxed(),
             );
             debug!("Response created successfully");
-            return Ok(response);
+            Ok(response)
         })
     }
 }

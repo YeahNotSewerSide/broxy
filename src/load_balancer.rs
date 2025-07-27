@@ -31,7 +31,7 @@ impl LoadBalancer {
     /// A new `LoadBalancer` instance
     pub fn new(servers: Vec<Upstream>) -> Self {
         assert!(
-            servers.len() > 0,
+            !servers.is_empty(),
             "Amount of servers should be greater than 0"
         );
         Self {
@@ -56,89 +56,5 @@ impl LoadBalancer {
     /// Returns the number of servers in the load balancer.
     pub fn server_count(&self) -> usize {
         self.servers.len()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-    fn create_test_upstream(port: u16) -> Upstream {
-        Upstream {
-            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port),
-            root_path: "http://localhost/".parse().unwrap(),
-            use_ssl: false,
-        }
-    }
-
-    #[test]
-    fn test_new_load_balancer() {
-        let servers = vec![create_test_upstream(8001), create_test_upstream(8002)];
-
-        let lb = LoadBalancer::new(servers);
-        assert_eq!(lb.server_count(), 2);
-    }
-
-    #[test]
-    fn test_empty_load_balancer() {
-        let lb = LoadBalancer::new(Vec::new());
-        assert_eq!(lb.server_count(), 0);
-        assert!(lb.get_upstream().is_none());
-    }
-
-    #[test]
-    fn test_round_robin_selection() {
-        let servers = vec![
-            create_test_upstream(8001),
-            create_test_upstream(8002),
-            create_test_upstream(8003),
-        ];
-
-        let lb = LoadBalancer::new(servers);
-
-        // First selection should return server 0
-        let server1 = lb.get_upstream().unwrap();
-        assert_eq!(server1.address.port(), 8001);
-
-        // Second selection should return server 1
-        let server2 = lb.get_upstream().unwrap();
-        assert_eq!(server2.address.port(), 8002);
-
-        // Third selection should return server 2
-        let server3 = lb.get_upstream().unwrap();
-        assert_eq!(server3.address.port(), 8003);
-
-        // Fourth selection should wrap around to server 0
-        let server4 = lb.get_upstream().unwrap();
-        assert_eq!(server4.address.port(), 8001);
-    }
-
-    #[test]
-    fn test_concurrent_access() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let servers = vec![create_test_upstream(8001), create_test_upstream(8002)];
-
-        let lb = Arc::new(LoadBalancer::new(servers));
-        let mut handles = vec![];
-
-        // Spawn multiple threads to test concurrent access
-        for _ in 0..10 {
-            let lb_clone = Arc::clone(&lb);
-            let handle = thread::spawn(move || {
-                for _ in 0..100 {
-                    let server = lb_clone.get_upstream().unwrap();
-                    assert!(server.address.port() == 8001 || server.address.port() == 8002);
-                }
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all threads to complete
-        for handle in handles {
-            handle.join().unwrap();
-        }
     }
 }

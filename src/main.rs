@@ -1,7 +1,6 @@
 use std::{net::SocketAddr, str::FromStr as _};
 
 use filter::{BodyFilter, Filter};
-use http::Uri;
 use server::Server;
 use service::{Service, ServiceBundle};
 use tracing::{debug, error, info, info_span, instrument};
@@ -30,7 +29,6 @@ async fn main() {
 
     let upstream = upstream::Upstream {
         address: SocketAddr::from_str("0.0.0.0:9944").unwrap(),
-        root_path: Uri::from_str("/").unwrap(),
         use_ssl: false,
     };
     let load_balancer = load_balancer::LoadBalancer::new(vec![upstream]);

@@ -96,7 +96,7 @@ impl BodyFilter {
             BodyFilter::InternalFullBody(func) => func(from, body),
             BodyFilter::External => unimplemented!(),
             BodyFilter::InternalIncoming(_) => {
-                return Err(anyhow::anyhow!("Expected to be called by `filter_async`"));
+                Err(anyhow::anyhow!("Expected to be called by `filter_async`"))
             }
         }
     }

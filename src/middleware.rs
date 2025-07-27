@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
 
 use http::{request, response};
-use http_body_util::BodyExt as _;
-use hyper::body::Incoming;
 
 /// Incoming request middleware function types.
 ///

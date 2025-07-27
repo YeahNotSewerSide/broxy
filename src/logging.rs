@@ -1,4 +1,4 @@
-use tracing::{Level, Subscriber};
+use tracing::Level;
 use tracing_subscriber::{
     fmt::{format::FmtSpan, time::LocalTime},
     FmtSubscriber,

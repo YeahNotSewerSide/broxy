@@ -7,7 +7,7 @@ use hyper_util::{
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::service::ServiceBundle;
 
