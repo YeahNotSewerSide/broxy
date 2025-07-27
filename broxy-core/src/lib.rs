@@ -16,14 +16,12 @@
 //! - `server`: HTTP server implementation
 //! - `service`: Service definitions and processing logic
 //! - `upstream`: Upstream server configuration
-//! - `utils`: Utility functions for URI manipulation
 
-pub mod config;
 pub mod filter;
 pub mod load_balancer;
-pub mod logging;
 pub mod middleware;
 pub mod server;
 pub mod service;
 pub mod upstream;
 pub mod utils;
+pub use hyper;

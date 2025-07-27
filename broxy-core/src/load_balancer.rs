@@ -52,9 +52,4 @@ impl LoadBalancer {
 
         (unsafe { self.servers.get_unchecked(index) }) as *const _
     }
-
-    /// Returns the number of servers in the load balancer.
-    pub fn server_count(&self) -> usize {
-        self.servers.len()
-    }
 }

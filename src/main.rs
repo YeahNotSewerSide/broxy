@@ -1,18 +1,11 @@
 use std::{net::SocketAddr, str::FromStr as _};
 
-use filter::{BodyFilter, Filter};
-use server::Server;
-use service::{Service, ServiceBundle};
+use broxy_core::filter::{BodyFilter, Filter};
+use broxy_core::server::Server;
+use broxy_core::service::{Service, ServiceBundle};
 use tracing::{debug, error, info, info_span, instrument};
-mod config;
-mod filter;
-mod load_balancer;
+
 mod logging;
-mod middleware;
-mod server;
-mod service;
-mod upstream;
-mod utils;
 
 #[tokio::main]
 async fn main() {
@@ -27,30 +20,30 @@ async fn main() {
 
     info!("Starting Broxy proxy server");
 
-    let load_balancer = load_balancer::LoadBalancer::new(vec![
-        upstream::Upstream {
+    let load_balancer = broxy_core::load_balancer::LoadBalancer::new(vec![
+        broxy_core::upstream::Upstream {
             address: SocketAddr::from_str("0.0.0.0:9944").unwrap(),
             use_ssl: false,
         },
-        upstream::Upstream {
+        broxy_core::upstream::Upstream {
             address: SocketAddr::from_str("0.0.0.0:9945").unwrap(),
             use_ssl: false,
         },
-        upstream::Upstream {
+        broxy_core::upstream::Upstream {
             address: SocketAddr::from_str("0.0.0.0:9946").unwrap(),
             use_ssl: false,
         },
-        upstream::Upstream {
+        broxy_core::upstream::Upstream {
             address: SocketAddr::from_str("0.0.0.0:9947").unwrap(),
             use_ssl: false,
         },
-        upstream::Upstream {
+        broxy_core::upstream::Upstream {
             address: SocketAddr::from_str("0.0.0.0:9948").unwrap(),
             use_ssl: false,
         },
     ]);
 
-    let filters = vec![Filter::Method(hyper::Method::POST)];
+    let filters = vec![Filter::Method(broxy_core::hyper::Method::POST)];
     let body_filters = vec![BodyFilter::InternalFullBody(|_, body| {
         let serialized = serde_json::from_slice::<serde_json::Value>(body);
         if let Ok(serialized) = serialized {
@@ -68,23 +61,25 @@ async fn main() {
             Err(unsafe { serialized.unwrap_err_unchecked() }.into())
         }
     })];
-    let middleware = middleware::Middleware::new(
+    let middleware = broxy_core::middleware::Middleware::new(
         vec![],
-        vec![middleware::MiddlewareOutgoingFunction::Internal(
-            |from, upstream_addr, header| {
-                header.headers.insert(
-                    http::HeaderName::from_str("X-Provided-For").unwrap(),
-                    from.to_string().parse().unwrap(),
-                );
-                header.headers.insert(
-                    http::HeaderName::from_str("X-backend").unwrap(),
-                    upstream_addr.to_string().parse().unwrap(),
-                );
-                Ok(())
-            },
-        )],
+        vec![
+            broxy_core::middleware::MiddlewareOutgoingFunction::Internal(
+                |from, upstream_addr, header| {
+                    header.headers.insert(
+                        http::HeaderName::from_str("X-Provided-For").unwrap(),
+                        from.to_string().parse().unwrap(),
+                    );
+                    header.headers.insert(
+                        http::HeaderName::from_str("X-backend").unwrap(),
+                        upstream_addr.to_string().parse().unwrap(),
+                    );
+                    Ok(())
+                },
+            ),
+        ],
     );
-    let service1 = Service::new(
+    let service = Service::new(
         filters,
         body_filters,
         Some(middleware),
@@ -92,7 +87,7 @@ async fn main() {
         None,
     );
 
-    let services = vec![service1];
+    let services = vec![service];
     let bundle = ServiceBundle::new(&services);
 
     let server_addr = SocketAddr::from_str("0.0.0.0:8546").unwrap();

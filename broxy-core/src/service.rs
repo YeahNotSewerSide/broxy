@@ -44,7 +44,7 @@ type ProcessFunction = fn(
 ///
 /// This type alias defines the signature for functions that generate
 /// custom response bodies when no matching service is found.
-type BodyNotFoundFunction = fn() -> Response<BoxBody<Bytes, hyper::Error>>;
+type BodyNotFoundFunction = fn(&SocketAddr, &[u8]) -> Response<BoxBody<Bytes, hyper::Error>>;
 
 /// A service that handles HTTP requests with filtering, middleware, and upstream forwarding.
 ///
@@ -61,7 +61,7 @@ pub struct Service {
     middleware: Option<Middleware>,
     /// Upstream server configuration
     load_balancer: *const LoadBalancer,
-    /// Optional custom "not found" response generator
+    /// Optional custom "not found" response generator, when a body filtered out
     not_found_body_response: Option<BodyNotFoundFunction>,
     /// Function pointer to the appropriate processing method
     _process: ProcessFunction,
@@ -235,10 +235,6 @@ impl Service {
         Ok(true)
     }
 
-    //pub fn filters_body(&self) -> bool {
-    //    self.body_filters.len() > 0
-    //}
-
     /// Filters requests sequentially using all configured header filters.
     ///
     /// This method processes filters one by one, stopping at the first filter that
@@ -356,9 +352,9 @@ impl Service {
     }
 
     fn process_without_body_without_middleware(
-        service: &Service,
+        _: &Service,
         upstream: Upstream,
-        from: &SocketAddr,
+        _: &SocketAddr,
         header: http::request::Parts,
         body: Incoming,
     ) -> Pin<
@@ -610,7 +606,7 @@ impl Service {
             if !Service::filter_request_by_body(body_filters, &from, &entire_body)? {
                 if let Some(not_found_body_response) = not_found_body_response {
                     warn!("Request body not filtered, returning specified response");
-                    return Ok(not_found_body_response());
+                    return Ok(not_found_body_response(&from, &entire_body));
                 } else {
                     warn!("Request body not filtered, returning FORBIDDEN");
                     let mut response = Response::new(

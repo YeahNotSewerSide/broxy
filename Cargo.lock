@@ -122,6 +122,24 @@ name = "broxy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "broxy-core",
+ "http",
+ "regex",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "broxy-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "futures",
  "http",
  "http-body-util",
@@ -133,8 +151,6 @@ dependencies = [
  "regex",
  "rustls-pemfile",
  "serde",
- "serde_json",
- "serde_yaml",
  "tokio",
  "tokio-rustls",
  "tracing",
