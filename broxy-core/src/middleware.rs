@@ -11,7 +11,7 @@ pub enum MiddlewareIncomingFunction {
     /// External middleware (not yet implemented)
     External,
     /// Internal middleware that processes both headers and body
-    InternalWithBody(fn(&SocketAddr, &mut request::Parts, &mut [u8]) -> anyhow::Result<()>),
+    InternalWithBody(fn(&SocketAddr, &mut request::Parts, &mut Vec<u8>) -> anyhow::Result<()>),
     /// Internal middleware that processes only headers
     Internal(fn(&SocketAddr, &mut request::Parts) -> anyhow::Result<()>),
 }
@@ -70,7 +70,7 @@ pub enum MiddlewareOutgoingFunction {
     External,
     /// Internal middleware that processes both headers and body
     InternalWithBody(
-        fn(&SocketAddr, &SocketAddr, &mut response::Parts, &mut [u8]) -> anyhow::Result<()>,
+        fn(&SocketAddr, &SocketAddr, &mut response::Parts, &mut Vec<u8>) -> anyhow::Result<()>,
     ),
     /// Internal middleware that processes only headers
     Internal(fn(&SocketAddr, &SocketAddr, &mut response::Parts) -> anyhow::Result<()>),
@@ -93,7 +93,7 @@ impl MiddlewareOutgoingFunction {
         from: &SocketAddr,
         upstream_addr: &SocketAddr,
         parts: &mut response::Parts,
-        body: &mut Option<&mut [u8]>,
+        body: &mut Option<&mut Vec<u8>>,
     ) -> anyhow::Result<()> {
         match self {
             MiddlewareOutgoingFunction::External => todo!(),
@@ -199,7 +199,7 @@ impl Middleware {
         from: &SocketAddr,
         upstream_addr: &SocketAddr,
         parts: &mut response::Parts,
-        mut body: Option<&mut [u8]>,
+        mut body: Option<&mut Vec<u8>>,
     ) -> anyhow::Result<()> {
         for proc in &self.process_out {
             proc.process(from, upstream_addr, parts, &mut body)?;
