@@ -5,7 +5,8 @@ use std::{
 };
 
 use http::request::Parts;
-use hyper::body::Incoming;
+use http_body_util::combinators::BoxBody;
+use hyper::body::{Bytes, Incoming};
 
 /// Type alias for external C function filters that operate on request bodies.
 ///
@@ -72,7 +73,13 @@ pub enum BodyFilter {
         fn(Incoming) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Vec<u8>>>> + Send>>,
     ),
     /// Synchronous body filter that processes the complete body as bytes
-    InternalFullBody(fn(&SocketAddr, &[u8]) -> anyhow::Result<bool>),
+    InternalFullBody(
+        fn(
+            &SocketAddr,
+            &[u8],
+        )
+            -> anyhow::Result<Option<http::response::Response<BoxBody<Bytes, hyper::Error>>>>,
+    ),
     /// External body filter (not yet implemented)
     External,
 }
@@ -91,7 +98,11 @@ impl BodyFilter {
     ///
     /// Returns `Ok(true)` if the body passes the filter, `Ok(false)` if it's rejected,
     /// or an error if filtering fails.
-    pub fn filter(&self, from: &SocketAddr, body: &[u8]) -> anyhow::Result<bool> {
+    pub fn filter(
+        &self,
+        from: &SocketAddr,
+        body: &[u8],
+    ) -> anyhow::Result<Option<http::response::Response<BoxBody<Bytes, hyper::Error>>>> {
         match self {
             BodyFilter::InternalFullBody(func) => func(from, body),
             BodyFilter::External => unimplemented!(),

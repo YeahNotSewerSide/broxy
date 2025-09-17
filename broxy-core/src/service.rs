@@ -40,12 +40,6 @@ type ProcessFunction = fn(
     Box<dyn Future<Output = Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>> + Send>,
 >;
 
-/// Function type for generating "not found" responses.
-///
-/// This type alias defines the signature for functions that generate
-/// custom response bodies when no matching service is found.
-type BodyNotFoundFunction = fn(&SocketAddr, &[u8]) -> Response<BoxBody<Bytes, hyper::Error>>;
-
 /// A service that handles HTTP requests with filtering, middleware, and upstream forwarding.
 ///
 /// Services are the core abstraction in Broxy that define how requests are processed.
@@ -61,8 +55,6 @@ pub struct Service {
     middleware: Option<Middleware>,
     /// Upstream server configuration
     load_balancer: *const LoadBalancer,
-    /// Optional custom "not found" response generator, when a body filtered out
-    not_found_body_response: Option<BodyNotFoundFunction>,
     /// Function pointer to the appropriate processing method
     _process: ProcessFunction,
     /// Function pointer to the appropriate filtering method
@@ -92,7 +84,6 @@ impl Service {
         body_filters: Vec<BodyFilter>,
         middleware: Option<Middleware>,
         load_balancer: *const LoadBalancer,
-        not_found_body_response: Option<BodyNotFoundFunction>,
     ) -> Self {
         let amount_of_filters = filters.len();
         let has_body_filters = !body_filters.is_empty();
@@ -122,7 +113,6 @@ impl Service {
             },
             middleware,
             body_filters,
-            not_found_body_response,
             _filter: if amount_of_filters > 5 {
                 Service::filter_parallel_header
             } else {
@@ -202,7 +192,7 @@ impl Service {
     ///
     /// # Returns
     ///
-    /// Returns `Ok(true)` if the body passes all filters, `Ok(false)` if it's rejected,
+    /// Returns `Ok(None)` if the body passes all filters, `Ok(Some((response::Parts, Response)))` if it's rejected,
     /// or an error if filtering fails.
     #[inline]
     // TODO: for now we assume that `BodyFilter::InternalIncoming` never used
@@ -210,7 +200,7 @@ impl Service {
         body_filters: &[BodyFilter],
         from: &SocketAddr,
         body: &[u8],
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<http::response::Response<BoxBody<Bytes, hyper::Error>>>> {
         debug!(
             "Filtering request body with {} filters, body size: {} bytes",
             body_filters.len(),
@@ -220,9 +210,9 @@ impl Service {
         for (i, filter) in body_filters.iter().enumerate() {
             match filter.filter(from, body) {
                 Ok(passed) => {
-                    debug!("Body filter {} result: {}", i, passed);
-                    if !passed {
-                        return Ok(false);
+                    if passed.is_some() {
+                        debug!("Body filter {} did not pass", i);
+                        return Ok(passed);
                     }
                 }
                 Err(e) => {
@@ -232,7 +222,7 @@ impl Service {
             }
         }
         debug!("All body filters passed");
-        Ok(true)
+        Ok(None)
     }
 
     /// Filters requests sequentially using all configured header filters.
@@ -580,7 +570,6 @@ impl Service {
 
         let middleware = service.middleware.clone();
         let body_filters = service.get_body_filters_raw();
-        let not_found_body_response = service.not_found_body_response;
         let from = *from;
         Box::pin(async move {
             let middleware = unsafe { middleware.unwrap_unchecked() };
@@ -603,20 +592,11 @@ impl Service {
             };
 
             debug!("Applying body filters");
-            if !Service::filter_request_by_body(body_filters, &from, &entire_body)? {
-                if let Some(not_found_body_response) = not_found_body_response {
-                    warn!("Request body not filtered, returning specified response");
-                    return Ok(not_found_body_response(&from, &entire_body));
-                } else {
-                    warn!("Request body not filtered, returning FORBIDDEN");
-                    let mut response = Response::new(
-                        Empty::<Bytes>::new()
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    );
-                    *response.status_mut() = StatusCode::FORBIDDEN;
-                    return Ok(response);
-                }
+            if let Some(response) =
+                Service::filter_request_by_body(body_filters, &from, &entire_body)?
+            {
+                warn!("Request body not filtered, returning response from a filter");
+                return Ok(response);
             }
 
             debug!("Connecting to upstream: {}", upstream.address);

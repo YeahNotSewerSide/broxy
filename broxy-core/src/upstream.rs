@@ -1,7 +1,5 @@
 use std::net::SocketAddr;
 
-use http::Uri;
-
 /// Configuration for an upstream server that the proxy forwards requests to.
 ///
 /// This struct defines the connection details and routing information for

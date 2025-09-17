@@ -24,4 +24,5 @@ pub mod server;
 pub mod service;
 pub mod upstream;
 pub mod utils;
+pub use http_body_util;
 pub use hyper;

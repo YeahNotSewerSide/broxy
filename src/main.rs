@@ -1,8 +1,11 @@
 use std::{net::SocketAddr, str::FromStr as _};
 
 use broxy_core::filter::{BodyFilter, Filter};
+use broxy_core::http_body_util::{BodyExt as _, Full};
+use broxy_core::hyper::body::Bytes;
 use broxy_core::server::Server;
 use broxy_core::service::{Service, ServiceBundle};
+use http::StatusCode;
 use tracing::{debug, error, info, info_span, instrument};
 
 mod logging;
@@ -50,12 +53,45 @@ async fn main() {
             let method = serialized.get("method").and_then(|m| m.as_str());
             if let Some(method) = method {
                 if method.eq("eth_sendTransaction") || method.eq("eth_sendRawTransaction") {
-                    Ok(false)
+                    let id = serialized.get("id").and_then(|m| m.as_u64());
+                    if let Some(id) = id {
+                        Ok(Some(
+                        http::response::Response::builder()
+                            .status(StatusCode::FORBIDDEN)
+                            .header("content-type", "application/json")
+                            .body(
+                                Full::<Bytes>::from(format!("{{{{\"jsonrpc\": \"2.0\",\"error\": {{\"code\": -32601,\"message\": \"Method not found\",\"data\": {{\"method\": \"unknownMethod\"}},\"id\": {}}}", id))
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            )
+                            .unwrap(),
+                    ))
+                    } else {
+                        Ok(Some(
+                            http::response::Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(
+                                    Full::<Bytes>::from(Vec::with_capacity(0))
+                                        .map_err(|never| match never {})
+                                        .boxed(),
+                                )
+                                .unwrap(),
+                        ))
+                    }
                 } else {
-                    Ok(true)
+                    Ok(None)
                 }
             } else {
-                Ok(false)
+                Ok(Some(
+                    http::response::Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(
+                            Full::<Bytes>::from(Vec::with_capacity(0))
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )
+                        .unwrap(),
+                ))
             }
         } else {
             Err(unsafe { serialized.unwrap_err_unchecked() }.into())
@@ -79,13 +115,7 @@ async fn main() {
             ),
         ],
     );
-    let service = Service::new(
-        filters,
-        body_filters,
-        Some(middleware),
-        &load_balancer,
-        None,
-    );
+    let service = Service::new(filters, body_filters, Some(middleware), &load_balancer);
 
     let services = vec![service];
     let bundle = ServiceBundle::new(&services);
