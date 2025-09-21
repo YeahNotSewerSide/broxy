@@ -4,7 +4,13 @@
 //! filtering, middleware application, and upstream forwarding. It provides both individual
 //! service instances and service bundles for routing requests.
 
-use std::{net::SocketAddr, pin::Pin, str::FromStr as _};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    pin::Pin,
+    str::FromStr as _,
+    sync::{Arc, Mutex},
+};
 
 use http::{Request, Response, StatusCode, request::Parts};
 use http_body_util::{BodyExt as _, Empty, Full, combinators::BoxBody};
@@ -59,6 +65,8 @@ pub struct Service {
     _process: ProcessFunction,
     /// Function pointer to the appropriate filtering method
     _filter: fn(&Service, &SocketAddr, header: &Parts) -> anyhow::Result<bool>,
+
+    open_connections: HashMap<Upstream, Arc<Mutex<Vec<TcpStream>>>>,
 }
 
 impl Service {
@@ -118,6 +126,11 @@ impl Service {
             } else {
                 Service::filter_sequential_header
             },
+            open_connections: &*(unsafe { *load_balancer })
+                .get_servers()
+                .iter()
+                .map(|server| (server.clone(), Arc::new(Mutex::new(Vec::new()))))
+                .collect::<HashMap<Upstream, Arc<Mutex<Vec<TcpStream>>>>>(),
         }
     }
 

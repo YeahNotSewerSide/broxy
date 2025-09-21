@@ -34,6 +34,7 @@ impl LoadBalancer {
             !servers.is_empty(),
             "Amount of servers should be greater than 0"
         );
+
         Self {
             servers,
             current_index: AtomicUsize::new(0),
@@ -41,15 +42,14 @@ impl LoadBalancer {
     }
 
     /// Selects the next upstream server using round-robin algorithm.
-    ///
-    /// # Returns
-    ///
-    /// - `Some(Upstream)` if servers are available
-    /// - `None` if no servers are configured
     pub fn get_upstream(&self) -> *const Upstream {
         let current = self.current_index.fetch_add(1, Ordering::Relaxed);
         let index = current % self.servers.len();
 
         (unsafe { self.servers.get_unchecked(index) }) as *const _
+    }
+
+    pub fn get_servers(&self) -> &[Upstream] {
+        &self.servers
     }
 }

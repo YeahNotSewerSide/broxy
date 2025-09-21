@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 ///
 /// This struct defines the connection details and routing information for
 /// a backend server that handles the actual request processing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct Upstream {
     /// The network address (IP and port) of the upstream server
     pub address: SocketAddr,

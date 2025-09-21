@@ -13,7 +13,7 @@ mod logging;
 #[tokio::main]
 async fn main() {
     // Initialize logging system
-    if let Err(e) = logging::init_logging_from_env() {
+    if let Err(e) = logging::init_logging() {
         eprintln!("Failed to initialize logging: {}", e);
         std::process::exit(1);
     }
